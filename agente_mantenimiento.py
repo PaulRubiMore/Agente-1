@@ -1,18 +1,25 @@
 # ============================================================
-# AGENTE 1 – GENERADOR AUTOMÁTICO DE ACTIVOS
+# AGENTE 1 – GENERADOR DE PLANES DE MANTENIMIENTO
+# VERSIÓN STREAMLIT
 # ============================================================
 
+import streamlit as st
 import pandas as pd
 import random
 
+st.set_page_config(layout="wide")
+
+st.title("🧠 Agente Generador de Planes de Mantenimiento")
+
+st.markdown("Simulación automática de activos y criticidad")
+
 # ============================================================
-# 1️⃣ FUNCIÓN PARA CREAR ACTIVOS ALEATORIOS
+# FUNCIÓN PARA GENERAR ACTIVOS
 # ============================================================
 
 def generar_activos(cantidad):
 
     tipos = ["Motor", "Bomba", "Compresor", "Ventilador", "Transformador"]
-
     lista_activos = []
 
     for i in range(cantidad):
@@ -33,52 +40,48 @@ def generar_activos(cantidad):
     return pd.DataFrame(lista_activos)
 
 # ============================================================
-# 2️⃣ GENERAR 50 ACTIVOS (PUEDES CAMBIAR EL NÚMERO)
+# SIDEBAR
 # ============================================================
 
-df = generar_activos(50)
+st.sidebar.header("⚙ Parámetros")
 
-# ============================================================
-# 3️⃣ CALCULAR CONSECUENCIA Y CRITICIDAD
-# ============================================================
+cantidad = st.sidebar.slider("Cantidad de activos", 10, 300, 50)
 
-df["Consecuencia"] = df["Impacto_Produccion"] + df["Impacto_Costo"]
-df["Criticidad"] = df["Probabilidad_Falla"] * df["Consecuencia"]
+if st.sidebar.button("Generar Activos"):
 
-# ============================================================
-# 4️⃣ CLASIFICACIÓN AUTOMÁTICA
-# ============================================================
+    df = generar_activos(cantidad)
 
-def clasificar(criticidad):
-    if criticidad >= 40:
-        return "ALTA"
-    elif criticidad >= 20:
-        return "MEDIA"
-    else:
-        return "BAJA"
+    # Cálculos
+    df["Consecuencia"] = df["Impacto_Produccion"] + df["Impacto_Costo"]
+    df["Criticidad"] = df["Probabilidad_Falla"] * df["Consecuencia"]
 
-df["Nivel_Criticidad"] = df["Criticidad"].apply(clasificar)
+    def clasificar(criticidad):
+        if criticidad >= 40:
+            return "ALTA"
+        elif criticidad >= 20:
+            return "MEDIA"
+        else:
+            return "BAJA"
 
-# ============================================================
-# 5️⃣ RECOMENDACIÓN DE PLAN
-# ============================================================
+    df["Nivel_Criticidad"] = df["Criticidad"].apply(clasificar)
 
-def recomendar_plan(nivel):
-    if nivel == "ALTA":
-        return "Predictivo + Monitoreo"
-    elif nivel == "MEDIA":
-        return "Preventivo Optimizado"
-    else:
-        return "Correctivo Planificado"
+    def recomendar_plan(nivel):
+        if nivel == "ALTA":
+            return "Predictivo + Monitoreo"
+        elif nivel == "MEDIA":
+            return "Preventivo Optimizado"
+        else:
+            return "Correctivo Planificado"
 
-df["Plan_Recomendado"] = df["Nivel_Criticidad"].apply(recomendar_plan)
+    df["Plan_Recomendado"] = df["Nivel_Criticidad"].apply(recomendar_plan)
 
-# ============================================================
-# 6️⃣ MOSTRAR RESULTADO
-# ============================================================
+    # Mostrar resultados
+    st.subheader("📊 Matriz de Criticidad")
+    st.dataframe(df, use_container_width=True)
 
-print("\n📊 MATRIZ DE CRITICIDAD GENERADA\n")
-print(df.head())  # solo muestra los primeros 5
+    st.subheader("📈 Resumen por Nivel")
+    resumen = df["Nivel_Criticidad"].value_counts()
+    st.bar_chart(resumen)
 
-print("\n🔢 RESUMEN POR NIVEL DE CRITICIDAD\n")
-print(df["Nivel_Criticidad"].value_counts())
+else:
+    st.info("Seleccione la cantidad y presione 'Generar Activos'")
