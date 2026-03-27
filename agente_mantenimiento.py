@@ -1,83 +1,154 @@
-import streamlit as st
 import pandas as pd
+import numpy as np
+import streamlit as st
 
-st.title("Agente de Mantenimiento - Órdenes y Fallas")
+# =========================================================
+# UTILIDADES
+# =========================================================
+def normalizar(s):
+    return (s - s.min()) / (s.max() - s.min() + 1e-9)
 
-# =========================
-# CARGA ROBUSTA DE DATOS
-# =========================
+
+def limpiar_columnas(df):
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.lower()
+        .str.replace(" ", "_")
+        .str.replace(".", "", regex=False)
+    )
+    return df
+
+
+# =========================================================
+# CARGA DE DATOS (CORREGIDO STREAMLIT CLOUD)
+# =========================================================
 def cargar_ordenes():
-    archivo = st.file_uploader("Sube archivo de órdenes", type=["xlsx"])
+    archivo = st.file_uploader("Subir archivo IWAN (Órdenes SAP)", type=["xlsx"])
 
     if archivo is not None:
-        return pd.read_excel(archivo)
-
-    # fallback si existe en repo
-    try:
-        return pd.read_excel("ordenes.xlsx")
-    except FileNotFoundError:
-        st.error("No hay archivo disponible. Sube un Excel.")
+        df = pd.read_excel(archivo, engine="openpyxl")
+        return df
+    else:
+        st.warning("Sube el archivo de órdenes SAP")
         st.stop()
 
-ordenes = cargar_ordenes()
 
-# =========================
-# VALIDACIÓN DE ESTRUCTURA
-# =========================
-columnas_requeridas = ["equipo", "fecha", "tipo_ot", "falla", "tiempo_paro", "costo"]
+# =========================================================
+# TRANSFORMACIÓN
+# =========================================================
+def transformar_ordenes(df):
 
-faltantes = [col for col in columnas_requeridas if col not in ordenes.columns]
+    df = limpiar_columnas(df)
 
-if faltantes:
-    st.error(f"Faltan columnas: {faltantes}")
-    st.stop()
+    columnas_clave = {
+        "orden": "orden",
+        "aviso": "aviso",
+        "equipo": "id_activo",
+        "ubicación_técnica": "ubicacion",
+        "clase_de_orden": "tipo_orden",
+        "prioridad": "prioridad",
+        "total_general_(real)": "horas_real",
+        "tota_general_(plan)": "horas_plan",
+        "fecha_de_inicio_extrema": "fecha_inicio",
+        "fecha_real_de_fin_de_la_orden": "fecha_fin"
+    }
 
-# =========================
-# LIMPIEZA
-# =========================
-ordenes["tipo_ot"] = ordenes["tipo_ot"].str.lower()
-ordenes["fecha"] = pd.to_datetime(ordenes["fecha"], errors="coerce")
+    # Validación de columnas existentes
+    columnas_validas = [col for col in columnas_clave.keys() if col in df.columns]
 
-# =========================
-# GENERACIÓN DE FALLAS DESDE ÓRDENES
-# =========================
-def calcular_fallas(df):
-    df_fallas = df[df["tipo_ot"] == "correctivo"]
-
-    resumen = df_fallas.groupby("equipo").agg({
-        "falla": "count",
-        "tiempo_paro": "sum",
-        "costo": "sum"
-    }).reset_index()
-
-    resumen.columns = ["equipo", "num_fallas", "tiempo_total", "costo_total"]
-
-    return resumen
-
-resumen_fallas = calcular_fallas(ordenes)
-
-# =========================
-# CRITICIDAD SIMPLE
-# =========================
-def calcular_criticidad(df):
-    df["criticidad"] = (
-        df["num_fallas"] * 0.5 +
-        df["tiempo_total"] * 0.3 +
-        df["costo_total"] * 0.2
+    df = df[columnas_validas].rename(
+        columns={k: v for k, v in columnas_clave.items() if k in columnas_validas}
     )
 
-    return df.sort_values(by="criticidad", ascending=False)
+    return df
 
-criticidad = calcular_criticidad(resumen_fallas)
 
-# =========================
-# OUTPUT
-# =========================
-st.subheader("Órdenes cargadas")
-st.dataframe(ordenes)
+# =========================================================
+# FEATURE ENGINEERING
+# =========================================================
+def generar_features(df):
 
-st.subheader("Resumen de fallas por equipo")
-st.dataframe(resumen_fallas)
+    # Convertir numéricos
+    df["horas_real"] = pd.to_numeric(df["horas_real"], errors="coerce").fillna(0)
+    df["horas_plan"] = pd.to_numeric(df["horas_plan"], errors="coerce").fillna(0)
 
-st.subheader("Ranking de criticidad")
-st.dataframe(criticidad)
+    # Clasificación de falla (correctivo)
+    df["es_falla"] = (
+        (df["tipo_orden"] == "PM02") &
+        (df["aviso"].notna())
+    ).astype(int)
+
+    # Frecuencia de falla
+    freq_falla = df.groupby("id_activo")["es_falla"].sum()
+
+    # MTTR
+    mttr = df.groupby("id_activo")["horas_real"].mean()
+
+    # Carga de trabajo
+    carga = df.groupby("id_activo")["horas_real"].sum()
+
+    # Desviación
+    df["desviacion"] = df["horas_real"] - df["horas_plan"]
+    desviacion = df.groupby("id_activo")["desviacion"].mean()
+
+    features = pd.concat([
+        freq_falla.rename("frecuencia_falla"),
+        mttr.rename("mttr"),
+        carga.rename("carga_trabajo"),
+        desviacion.rename("desviacion")
+    ], axis=1).fillna(0)
+
+    return features
+
+
+# =========================================================
+# CRITICIDAD
+# =========================================================
+def calcular_criticidad(features):
+
+    features["criticidad"] = (
+        0.4 * normalizar(features["frecuencia_falla"]) +
+        0.3 * normalizar(features["mttr"]) +
+        0.2 * normalizar(features["carga_trabajo"]) +
+        0.1 * normalizar(abs(features["desviacion"]))
+    )
+
+    return features.sort_values("criticidad", ascending=False)
+
+
+# =========================================================
+# AGENTE
+# =========================================================
+class AgenteCondicionActivos:
+
+    def ejecutar(self, df):
+
+        df = transformar_ordenes(df)
+
+        features = generar_features(df)
+
+        criticidad = calcular_criticidad(features)
+
+        return criticidad
+
+
+# =========================================================
+# STREAMLIT APP
+# =========================================================
+st.title("Agente Analista de Condición de Activos")
+
+df = cargar_ordenes()
+
+agente = AgenteCondicionActivos()
+resultado = agente.ejecutar(df)
+
+st.subheader("Clasificación de criticidad de activos")
+st.dataframe(resultado)
+
+st.download_button(
+    "Descargar resultados",
+    resultado.to_csv(index=True),
+    "criticidad_activos.csv",
+    "text/csv"
+)
