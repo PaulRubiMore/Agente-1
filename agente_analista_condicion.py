@@ -1,183 +1,193 @@
 # ============================================================
-# AGENTE 2 – ANALISTA DE CONDICIÓN DE ACTIVOS (VERSIÓN REALISTA)
+# SIMULADOR DE TRASLADO DE ACTIVOS + CRITICIDAD DINÁMICA
 # ============================================================
 
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.express as px
-from datetime import datetime
+import random
 
 st.set_page_config(layout="wide")
-st.title("🧠 AGENTE 2 – Analista de Condición de Activos")
+st.title("🔄 Simulación de Criticidad por Traslado de Activos")
 
 # ============================================================
-# 1️⃣ MAESTRO DE EQUIPOS (IDs REALES)
+# GENERAR ACTIVOS
 # ============================================================
 
-equipos = pd.DataFrame({
-    "ID": [
-        10000000,10000001,10000002,10000003,10000004,10000005,
-        10000006,10000007,10000008,10000009,10000010,10000011,
-        10000012,10000013,10000014,10000015,10000016,10000017,
-        10000018,10000019,10000020,10000021,10000022,10000023,
-        10000024,10000025,10000026,10000027,10000028
-    ],
-    "Nombre": [
-        "BRAZO DE CARGUE","BRAZO DE CARGUE","BRAZO DE CARGUE","BRAZO DE CARGUE","BRAZO DE CARGUE","BRAZO DE CARGUE",
-        "CARGADERO CRUDO VEHICULOS 1","CARGADERO CRUDO VEHICULOS 2",
-        "56ABR1 ANILLO BOQUILLAS ROCIADOR","56ABR2 ANILLO BOQUILLAS ROCIADOR","56ABR3 ANILLO BOQUILLAS ROCIADOR",
-        "56ABR4 ANILLO BOQUILLAS ROCIADOR","56ABR5 ANILLO BOQUILLAS ROCIADOR","56ABR9 ANILLO BOQUILLAS ROCIADOR",
-        "56ABR8 ANILLO BOQUILLAS ROCIADOR",
-        "56CE01 CAMARA ESPUMA","56CE02 CAMARA ESPUMA","56CE03 CAMARA ESPUMA",
-        "56CE04 CAMARA ESPUMA","56CE05 CAMARA ESPUMA","56CE06 CAMARA ESPUMA",
-        "CAMARA ESPUMA","CAMARA ESPUMA",
-        "56HF001 MONITOR HIDRANTE","56HF002 MONITOR HIDRANTE","56HF003 MONITOR HIDRANTE",
-        "56HF004 MONITOR HIDRANTE","56HF005 MONITOR HIDRANTE","56HF006 MONITOR HIDRANTE"
-    ]
-})
+def generar_activos(n):
 
-# Clasificación por tipo
-equipos["Tipo"] = equipos["Nombre"].apply(lambda x: 
-    "BRAZO" if "BRAZO" in x else
-    "ROCIADOR" if "ABR" in x else
-    "ESPUMA" if "CE" in x else
-    "HIDRANTE" if "HF" in x else
-    "OTRO"
-)
+    tipos = ["Motor", "Bomba", "Compresor"]
+    areas = ["Produccion", "Servicios", "Backup"]
+
+    data = []
+
+    for i in range(n):
+        data.append({
+            "Activo": f"{random.choice(tipos)} {i+1}",
+            "Area": random.choice(areas),
+            "Probabilidad_Falla": random.randint(1,5),
+            "Impacto_Produccion": random.randint(1,5),
+            "Impacto_Costo": random.randint(1,5),
+            "Redundancia": random.choice([0,1]),
+            "Criticidad_Proceso": random.randint(1,5)
+        })
+
+    df = pd.DataFrame(data)
+
+    df["Consecuencia"] = df["Impacto_Produccion"] + df["Impacto_Costo"]
+
+    return df
 
 # ============================================================
-# 2️⃣ SELECCIÓN DE ACTIVO
+# FACTOR CONTEXTO
 # ============================================================
 
-activo = st.selectbox(
-    "Seleccionar Activo",
-    equipos["ID"],
-    format_func=lambda x: f"{x} - {equipos.loc[equipos['ID']==x, 'Nombre'].values[0]}"
-)
+def factor_contexto(area, redundancia, criticidad_proceso):
 
-info_activo = equipos[equipos["ID"] == activo].iloc[0]
+    factor = 1
 
-st.markdown(f"**Tipo:** {info_activo['Tipo']}")
+    if area == "Produccion":
+        factor *= 1.5
+    elif area == "Backup":
+        factor *= 0.7
+
+    if redundancia == 0:
+        factor *= 1.4
+
+    factor *= (criticidad_proceso / 3)
+
+    return factor
 
 # ============================================================
-# 3️⃣ GENERACIÓN DE DATOS (SIMULACIÓN DIFERENCIADA)
+# CALCULO CRITICIDAD
 # ============================================================
 
-def generar_datos_activo(id_activo, tipo):
+def calcular_criticidad(df):
 
-    fechas = pd.date_range(end=datetime.today(), periods=180)
+    df["Factor_Contexto"] = df.apply(
+        lambda x: factor_contexto(
+            x["Area"],
+            x["Redundancia"],
+            x["Criticidad_Proceso"]
+        ), axis=1
+    )
 
-    np.random.seed(id_activo % 1000)
+    df["Criticidad"] = (
+        df["Probabilidad_Falla"] *
+        df["Consecuencia"] *
+        df["Factor_Contexto"]
+    )
 
-    # Parámetros por tipo
-    if tipo == "BRAZO":
-        base_vib, base_temp = 4.5, 70
-    elif tipo == "ROCIADOR":
-        base_vib, base_temp = 3.5, 60
-    elif tipo == "ESPUMA":
-        base_vib, base_temp = 3.0, 55
-    elif tipo == "HIDRANTE":
-        base_vib, base_temp = 2.5, 50
+    return df
+
+# ============================================================
+# RECOMENDACIÓN
+# ============================================================
+
+def clasificar(c):
+    if c >= 40:
+        return "ALTA"
+    elif c >= 20:
+        return "MEDIA"
     else:
-        base_vib, base_temp = 4.0, 65
+        return "BAJA"
 
-    vibracion = np.random.normal(base_vib, 0.5, len(fechas))
-    temperatura = np.random.normal(base_temp, 3, len(fechas))
-
-    # Degradación
-    vibracion += np.linspace(0, np.random.uniform(1,3), len(fechas))
-    temperatura += np.linspace(0, np.random.uniform(2,6), len(fechas))
-
-    # Fallas
-    fallas = np.random.choice([0,1], size=len(fechas), p=[0.92,0.08])
-
-    return pd.DataFrame({
-        "Fecha": fechas,
-        "Vibracion": vibracion,
-        "Temperatura": temperatura,
-        "Falla": fallas
-    })
-
-df = generar_datos_activo(activo, info_activo["Tipo"])
+def plan(nivel):
+    if nivel == "ALTA":
+        return "Predictivo"
+    elif nivel == "MEDIA":
+        return "Preventivo"
+    else:
+        return "Correctivo"
 
 # ============================================================
-# 4️⃣ DETECCIÓN DE ANOMALÍAS
+# APP
 # ============================================================
 
-df["Z_Vibracion"] = (df["Vibracion"] - df["Vibracion"].mean()) / df["Vibracion"].std()
-df["Anomalia"] = df["Z_Vibracion"].abs() > 2
+df = generar_activos(50)
+df = calcular_criticidad(df)
 
-# ============================================================
-# 5️⃣ MTBF
-# ============================================================
+df["Nivel"] = df["Criticidad"].apply(clasificar)
+df["Plan"] = df["Nivel"].apply(plan)
 
-fechas_falla = df[df["Falla"] == 1]["Fecha"]
+# -------------------------------
+# SELECCIÓN ACTIVO
+# -------------------------------
 
-if len(fechas_falla) > 1:
-    mtbf = fechas_falla.diff().dropna().mean().days
-else:
-    mtbf = 0
+activo_sel = st.selectbox("Selecciona un activo", df["Activo"])
 
-# ============================================================
-# 6️⃣ CLASIFICACIÓN
-# ============================================================
+activo = df[df["Activo"] == activo_sel].iloc[0]
 
-total_fallas = df["Falla"].sum()
-anomalias = df["Anomalia"].sum()
-
-if total_fallas < 5 and anomalias < 5:
-    estado = "🟢 Estable"
-elif total_fallas < 10:
-    estado = "🟡 En Observación"
-elif total_fallas < 20:
-    estado = "🟠 Degradándose"
-else:
-    estado = "🔴 Crítico"
-
-# ============================================================
-# 7️⃣ DASHBOARD
-# ============================================================
+st.subheader("📍 Estado Actual")
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric("Total Fallas", int(total_fallas))
-col2.metric("Anomalías", int(anomalias))
-col3.metric("MTBF (días)", int(mtbf))
+col1.metric("Área", activo["Area"])
+col2.metric("Criticidad", round(activo["Criticidad"],2))
+col3.metric("Nivel", activo["Nivel"])
 
-st.subheader("Estado del Activo")
-st.markdown(f"## {estado}")
+# -------------------------------
+# SIMULACIÓN CAMBIO
+# -------------------------------
 
-# ============================================================
-# 8️⃣ GRÁFICAS
-# ============================================================
+st.subheader("🔧 Simular traslado / cambio")
 
-fig1 = px.line(df, x="Fecha", y="Vibracion", title="Vibración")
-st.plotly_chart(fig1, use_container_width=True)
+nueva_area = st.selectbox("Nueva Área", ["Produccion", "Servicios", "Backup"])
+nueva_redundancia = st.selectbox("Redundancia", [0,1])
+nuevo_proceso = st.slider("Criticidad del proceso", 1, 5, int(activo["Criticidad_Proceso"]))
 
-fig2 = px.line(df, x="Fecha", y="Temperatura", title="Temperatura")
-st.plotly_chart(fig2, use_container_width=True)
+# -------------------------------
+# CALCULO NUEVO
+# -------------------------------
 
-# ============================================================
-# 9️⃣ ALERTAS
-# ============================================================
+nuevo_factor = factor_contexto(nueva_area, nueva_redundancia, nuevo_proceso)
 
-st.subheader("🚨 Alertas")
+nueva_criticidad = (
+    activo["Probabilidad_Falla"] *
+    activo["Consecuencia"] *
+    nuevo_factor
+)
 
-if anomalias > 10:
-    st.error("Alta cantidad de anomalías. Revisar inmediatamente.")
-elif anomalias > 5:
-    st.warning("Comportamiento inestable.")
-else:
-    st.success("Operación normal.")
+nuevo_nivel = clasificar(nueva_criticidad)
+nuevo_plan = plan(nuevo_nivel)
 
-# ============================================================
-# 🔟 PREDICCIÓN DE FALLA
-# ============================================================
+# -------------------------------
+# RESULTADO
+# -------------------------------
 
-tendencia = np.polyfit(range(len(df)), df["Vibracion"], 1)[0]
+st.subheader("📊 Comparación")
 
-if tendencia > 0.01:
-    st.warning("📈 Tendencia creciente de vibración.")
-else:
-    st.success("📊 Sin tendencia crítica.")
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown("### Antes")
+    st.metric("Criticidad", round(activo["Criticidad"],2))
+    st.metric("Nivel", activo["Nivel"])
+
+with col2:
+    st.markdown("### Después")
+    st.metric("Criticidad", round(nueva_criticidad,2))
+    st.metric("Nivel", nuevo_nivel)
+
+# -------------------------------
+# ALERTA
+# -------------------------------
+
+if nuevo_nivel != activo["Nivel"]:
+    st.warning("⚠ Cambio de criticidad detectado → se debe actualizar estrategia de mantenimiento")
+
+# -------------------------------
+# PLAN
+# -------------------------------
+
+st.subheader("🧠 Plan Recomendado")
+
+st.write("ANTES:", activo["Plan"])
+st.write("DESPUÉS:", nuevo_plan)
+
+# -------------------------------
+# TABLA COMPLETA
+# -------------------------------
+
+st.subheader("📋 Todos los activos")
+
+st.dataframe(df, use_container_width=True)
