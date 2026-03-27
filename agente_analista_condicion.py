@@ -1,5 +1,5 @@
 # ============================================================
-# SIMULADOR DE TRASLADO DE ACTIVOS + CRITICIDAD DINÁMICA
+# AGENTE – CRITICIDAD DINÁMICA + REUBICACIÓN DE ACTIVOS
 # ============================================================
 
 import streamlit as st
@@ -7,7 +7,7 @@ import pandas as pd
 import random
 
 st.set_page_config(layout="wide")
-st.title("🔄 Simulación de Criticidad por Traslado de Activos")
+st.title("🔄 Criticidad Dinámica y Reubicación de Activos")
 
 # ============================================================
 # GENERAR ACTIVOS
@@ -16,6 +16,7 @@ st.title("🔄 Simulación de Criticidad por Traslado de Activos")
 def generar_activos(n):
 
     tipos = ["Motor", "Bomba", "Compresor"]
+    centros = ["CAP1", "CAMPO2"]
     areas = ["Produccion", "Servicios", "Backup"]
 
     data = []
@@ -23,6 +24,7 @@ def generar_activos(n):
     for i in range(n):
         data.append({
             "Activo": f"{random.choice(tipos)} {i+1}",
+            "Centro": random.choice(centros),
             "Area": random.choice(areas),
             "Probabilidad_Falla": random.randint(1,5),
             "Impacto_Produccion": random.randint(1,5),
@@ -32,7 +34,6 @@ def generar_activos(n):
         })
 
     df = pd.DataFrame(data)
-
     df["Consecuencia"] = df["Impacto_Produccion"] + df["Impacto_Costo"]
 
     return df
@@ -41,30 +42,41 @@ def generar_activos(n):
 # FACTOR CONTEXTO
 # ============================================================
 
-def factor_contexto(area, redundancia, criticidad_proceso):
+def factor_contexto(centro, area, redundancia, criticidad_proceso):
 
     factor = 1
 
-    if area == "Produccion":
-        factor *= 1.5
-    elif area == "Backup":
-        factor *= 0.7
+    # Centro
+    if centro == "CAMPO2":
+        factor *= 1.3
 
+    # Área
+    mapa_area = {
+        "Produccion": 1.5,
+        "Servicios": 1.0,
+        "Backup": 0.7
+    }
+
+    factor *= mapa_area[area]
+
+    # Redundancia
     if redundancia == 0:
         factor *= 1.4
 
+    # Proceso
     factor *= (criticidad_proceso / 3)
 
     return factor
 
 # ============================================================
-# CALCULO CRITICIDAD
+# CALCULAR CRITICIDAD
 # ============================================================
 
 def calcular_criticidad(df):
 
     df["Factor_Contexto"] = df.apply(
         lambda x: factor_contexto(
+            x["Centro"],
             x["Area"],
             x["Redundancia"],
             x["Criticidad_Proceso"]
@@ -80,7 +92,7 @@ def calcular_criticidad(df):
     return df
 
 # ============================================================
-# RECOMENDACIÓN
+# CLASIFICACIÓN
 # ============================================================
 
 def clasificar(c):
@@ -91,55 +103,58 @@ def clasificar(c):
     else:
         return "BAJA"
 
-def plan(nivel):
-    if nivel == "ALTA":
-        return "Predictivo"
-    elif nivel == "MEDIA":
-        return "Preventivo"
-    else:
-        return "Correctivo"
-
 # ============================================================
-# APP
+# SESSION STATE (para persistencia en Streamlit)
 # ============================================================
 
-df = generar_activos(50)
-df = calcular_criticidad(df)
+if "df" not in st.session_state:
+    st.session_state.df = calcular_criticidad(generar_activos(50))
+    st.session_state.df["Nivel"] = st.session_state.df["Criticidad"].apply(clasificar)
 
-df["Nivel"] = df["Criticidad"].apply(clasificar)
-df["Plan"] = df["Nivel"].apply(plan)
+df = st.session_state.df
 
-# -------------------------------
+# ============================================================
 # SELECCIÓN ACTIVO
-# -------------------------------
+# ============================================================
 
 activo_sel = st.selectbox("Selecciona un activo", df["Activo"])
 
 activo = df[df["Activo"] == activo_sel].iloc[0]
 
+# ============================================================
+# ESTADO ACTUAL
+# ============================================================
+
 st.subheader("📍 Estado Actual")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Área", activo["Area"])
-col2.metric("Criticidad", round(activo["Criticidad"],2))
-col3.metric("Nivel", activo["Nivel"])
+col1.metric("Centro", activo["Centro"])
+col2.metric("Área", activo["Area"])
+col3.metric("Criticidad", round(activo["Criticidad"],2))
+col4.metric("Nivel", activo["Nivel"])
 
-# -------------------------------
-# SIMULACIÓN CAMBIO
-# -------------------------------
+# ============================================================
+# SIMULACIÓN DE REUBICACIÓN
+# ============================================================
 
-st.subheader("🔧 Simular traslado / cambio")
+st.subheader("🔧 Simular Reubicación")
 
+nuevo_centro = st.selectbox("Nuevo Centro", ["CAP1", "CAMPO2"])
 nueva_area = st.selectbox("Nueva Área", ["Produccion", "Servicios", "Backup"])
 nueva_redundancia = st.selectbox("Redundancia", [0,1])
 nuevo_proceso = st.slider("Criticidad del proceso", 1, 5, int(activo["Criticidad_Proceso"]))
 
-# -------------------------------
+# ============================================================
 # CALCULO NUEVO
-# -------------------------------
+# ============================================================
 
-nuevo_factor = factor_contexto(nueva_area, nueva_redundancia, nuevo_proceso)
+nuevo_factor = factor_contexto(
+    nuevo_centro,
+    nueva_area,
+    nueva_redundancia,
+    nuevo_proceso
+)
 
 nueva_criticidad = (
     activo["Probabilidad_Falla"] *
@@ -148,11 +163,10 @@ nueva_criticidad = (
 )
 
 nuevo_nivel = clasificar(nueva_criticidad)
-nuevo_plan = plan(nuevo_nivel)
 
-# -------------------------------
-# RESULTADO
-# -------------------------------
+# ============================================================
+# COMPARACIÓN
+# ============================================================
 
 st.subheader("📊 Comparación")
 
@@ -168,26 +182,36 @@ with col2:
     st.metric("Criticidad", round(nueva_criticidad,2))
     st.metric("Nivel", nuevo_nivel)
 
-# -------------------------------
+# ============================================================
 # ALERTA
-# -------------------------------
+# ============================================================
 
 if nuevo_nivel != activo["Nivel"]:
-    st.warning("⚠ Cambio de criticidad detectado → se debe actualizar estrategia de mantenimiento")
+    st.warning("⚠ Cambio de criticidad detectado")
 
-# -------------------------------
-# PLAN
-# -------------------------------
+# ============================================================
+# APLICAR REUBICACIÓN (ACTUALIZA TAXONOMÍA)
+# ============================================================
 
-st.subheader("🧠 Plan Recomendado")
+if st.button("Aplicar Reubicación"):
 
-st.write("ANTES:", activo["Plan"])
-st.write("DESPUÉS:", nuevo_plan)
+    idx = df[df["Activo"] == activo_sel].index[0]
 
-# -------------------------------
-# TABLA COMPLETA
-# -------------------------------
+    st.session_state.df.loc[idx, "Centro"] = nuevo_centro
+    st.session_state.df.loc[idx, "Area"] = nueva_area
+    st.session_state.df.loc[idx, "Redundancia"] = nueva_redundancia
+    st.session_state.df.loc[idx, "Criticidad_Proceso"] = nuevo_proceso
 
-st.subheader("📋 Todos los activos")
+    # Recalcular criticidad
+    st.session_state.df = calcular_criticidad(st.session_state.df)
+    st.session_state.df["Nivel"] = st.session_state.df["Criticidad"].apply(clasificar)
 
-st.dataframe(df, use_container_width=True)
+    st.success("✅ Activo reubicado y criticidad actualizada")
+
+# ============================================================
+# TABLA FINAL
+# ============================================================
+
+st.subheader("📋 Activos actualizados")
+
+st.dataframe(st.session_state.df, use_container_width=True)
