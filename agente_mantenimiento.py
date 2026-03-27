@@ -1,6 +1,5 @@
 # =============================================================================
-# AGENTE ANALISTA DE CONDICIÓN DE ACTIVOS (VERSIÓN CLOUD ROBUSTA)
-# SIN SKLEARN
+# AGENTE ANALISTA DE CONDICIÓN DE ACTIVOS - VERSION FINAL CLOUD
 # =============================================================================
 
 import streamlit as st
@@ -8,15 +7,14 @@ import pandas as pd
 import numpy as np
 
 # =============================================================================
-# 1. DATASET (simulación o reemplazar por tu fuente real)
+# 1. DATASET
 # =============================================================================
 
 @st.cache_data
 def generar_data():
     np.random.seed(42)
 
-    n_equipos = 20
-    equipos = [f"EQ_{i:03d}" for i in range(n_equipos)]
+    equipos = [f"EQ_{i:03d}" for i in range(20)]
 
     data = []
     for eq in equipos:
@@ -38,13 +36,14 @@ def generar_data():
 df = generar_data()
 
 # =============================================================================
-# 2. FEATURE ENGINEERING
+# 2. FEATURES
 # =============================================================================
 
 df["mtbf"] = df["tiempo_operacion"] / (df["fallas_mes"] + 1)
 df["mttr"] = df["tiempo_reparacion"]
 
 df["frecuencia_fallas_30d"] = df["fallas_mes"]
+
 df["frecuencia_fallas_90d"] = (
     df.groupby("equipo")["fallas_mes"]
     .rolling(3)
@@ -55,42 +54,41 @@ df["frecuencia_fallas_90d"] = (
 df["costo_mantenimiento_acum"] = df.groupby("equipo")["costo_mantenimiento"].cumsum()
 
 # =============================================================================
-# 3. TENDENCIA (sin sklearn)
+# 3. TENDENCIA (SIN WARNING)
 # =============================================================================
 
-def calcular_tendencia(grupo):
-    y = grupo["fallas_mes"].values
-    x = np.arange(len(y))
+def calcular_tendencia_array(y):
     if len(y) < 2:
         return 0
+    x = np.arange(len(y))
     return np.polyfit(x, y, 1)[0]
 
 tendencias = (
-    df.groupby("equipo", group_keys=False)
-    .apply(lambda g: calcular_tendencia(g))
+    df.groupby("equipo")["fallas_mes"]
+    .apply(lambda g: calcular_tendencia_array(g.values))
     .reset_index(name="pendiente_fallas")
 )
 
 df = df.merge(tendencias, on="equipo", how="left")
 
 # =============================================================================
-# 4. DETECCIÓN DE ANOMALÍAS (Z-SCORE)
+# 4. ANOMALÍAS (Z-SCORE)
 # =============================================================================
 
-def detectar_anomalias(grupo):
-    z = (grupo - grupo.mean()) / (grupo.std() + 1e-6)
+def detectar_anomalias_array(x):
+    z = (x - x.mean()) / (x.std() + 1e-6)
     return (np.abs(z) > 2.5).astype(int)
 
 df["flag_anomalia"] = (
     df.groupby("equipo")["frecuencia_fallas_30d"]
-    .transform(detectar_anomalias)
+    .transform(lambda x: detectar_anomalias_array(x))
 )
 
 # =============================================================================
 # 5. CLASIFICACIÓN
 # =============================================================================
 
-def clasificar_estado(row):
+def clasificar(row):
     if row["flag_anomalia"] == 1 and row["pendiente_fallas"] > 0:
         return "CRITICO"
     elif row["pendiente_fallas"] > 0:
@@ -100,7 +98,7 @@ def clasificar_estado(row):
     else:
         return "NORMAL"
 
-df["estado_activo"] = df.apply(clasificar_estado, axis=1)
+df["estado_activo"] = df.apply(clasificar, axis=1)
 
 # =============================================================================
 # 6. SCORE DE CRITICIDAD
@@ -114,30 +112,29 @@ df["criticidad_score"] = (
     0.1 * df["flag_anomalia"]
 )
 
+# normalización
 df["criticidad_score"] = (
     (df["criticidad_score"] - df["criticidad_score"].min()) /
-    (df["criticidad_score"].max() - df["criticidad_score"].min())
+    (df["criticidad_score"].max() - df["criticidad_score"].min() + 1e-6)
 )
 
 # =============================================================================
-# 7. FORECAST (regresión simple con numpy)
+# 7. FORECAST (SIN WARNING)
 # =============================================================================
 
-def forecast_fallas(grupo, pasos=3):
-    y = grupo["fallas_mes"].values
-    x = np.arange(len(y))
-
+def forecast_array(y, pasos=3):
     if len(y) < 2:
         return [0]*pasos
 
+    x = np.arange(len(y))
     coef = np.polyfit(x, y, 1)
     future_x = np.arange(len(y), len(y)+pasos)
 
     return (coef[0]*future_x + coef[1]).tolist()
 
 forecast = (
-    df.groupby("equipo", group_keys=False)
-    .apply(lambda g: forecast_fallas(g))
+    df.groupby("equipo")["fallas_mes"]
+    .apply(lambda g: forecast_array(g.values))
     .to_dict()
 )
 
@@ -154,17 +151,17 @@ df_alertas = df[df["estado_activo"].isin(["CRITICO", "DEGRADANDO"])]
 st.title("Agente Analista de Condición de Activos")
 
 st.subheader("Clasificación de Activos")
-st.dataframe(df[[
-    "equipo", "estado_activo", "criticidad_score",
-    "centro", "area"
-]].drop_duplicates())
+st.dataframe(
+    df[["equipo", "estado_activo", "criticidad_score", "centro", "area"]]
+    .drop_duplicates()
+    .sort_values("criticidad_score", ascending=False)
+)
 
 st.subheader("Alertas")
-st.dataframe(df_alertas[[
-    "equipo", "estado_activo",
-    "criticidad_score", "pendiente_fallas"
-]])
+st.dataframe(
+    df_alertas[["equipo", "estado_activo", "criticidad_score", "pendiente_fallas"]]
+)
 
 st.subheader("Forecast de Fallas")
-equipo_sel = st.selectbox("Seleccionar equipo", df["equipo"].unique())
+equipo_sel = st.selectbox("Equipo", df["equipo"].unique())
 st.write(forecast[equipo_sel])
