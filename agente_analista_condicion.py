@@ -1,5 +1,5 @@
 # ============================================================
-# AGENTE DE CRITICIDAD + REUBICACIÓN DE ACTIVOS
+# AGENTE DE CRITICIDAD + REUBICACIÓN (CORREGIDO)
 # ============================================================
 
 import streamlit as st
@@ -10,7 +10,7 @@ st.set_page_config(page_title="Agente de Criticidad", layout="wide")
 st.title("🔧 Agente de Evaluación de Activos")
 
 # ============================================================
-# 1. DATA INICIAL (SIMULADA)
+# 1. DATA INICIAL
 # ============================================================
 
 data = [
@@ -47,13 +47,11 @@ def factor_contexto(ubicacion):
         return 1.0
 
 def calcular_criticidad(row, nueva_ubicacion):
-
     base = (
         row["frecuencia_fallas"] * 0.4 +
         row["costo_mantenimiento"] * 0.3 +
         row["impacto_operacional"] * 0.3
     )
-
     return base * factor_contexto(nueva_ubicacion)
 
 def clasificar(score):
@@ -80,18 +78,32 @@ def actualizar_taxonomia(row, nueva_ubicacion):
 
 def procesar_evento(row, nueva_ubicacion):
 
+    # =========================
+    # ESTADO ANTERIOR
+    # =========================
+    criticidad_anterior = row["criticidad"]
     ubicacion_anterior = row["ubicacion"]
 
-    # 1. actualizar taxonomía
+    # =========================
+    # ACTUALIZAR TAXONOMÍA
+    # =========================
     row = actualizar_taxonomia(row, nueva_ubicacion)
 
-    # 2. recalcular criticidad
+    # =========================
+    # RECALCULAR CRITICIDAD
+    # =========================
     score = calcular_criticidad(row, nueva_ubicacion)
     nueva_criticidad = clasificar(score)
 
-    # 3. detectar cambio
-    cambio = nueva_criticidad != row["criticidad"]
+    # =========================
+    # COMPARACIÓN
+    # =========================
+    cambio = nueva_criticidad != criticidad_anterior
 
+    # =========================
+    # ACTUALIZAR ESTADO
+    # =========================
+    row["criticidad_anterior"] = criticidad_anterior
     row["criticidad"] = nueva_criticidad
     row["score"] = round(score, 2)
     row["cambio"] = cambio
@@ -104,13 +116,10 @@ def procesar_evento(row, nueva_ubicacion):
 # ============================================================
 
 st.subheader("📋 Activos")
-
 st.dataframe(df)
 
-# Selección de activo
 activo_id = st.selectbox("Selecciona un activo", df["id"])
 
-# Nueva ubicación
 nueva_ubicacion = st.selectbox(
     "Nueva ubicación",
     ["CAP1", "CAMPO2"]
@@ -126,14 +135,14 @@ if st.button("Procesar cambio"):
 
     resultado = procesar_evento(activo, nueva_ubicacion)
 
-    st.subheader("📊 Resultado")
+    st.subheader("📊 Comparación")
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("### Antes")
         st.write("Ubicación:", resultado["ubicacion_anterior"])
-        st.write("Criticidad:", activo["criticidad"])
+        st.write("Criticidad:", resultado["criticidad_anterior"])
 
     with col2:
         st.markdown("### Después")
@@ -152,8 +161,10 @@ if st.button("Procesar cambio"):
         "equipo": resultado["id"],
         "ubicacion_anterior": resultado["ubicacion_anterior"],
         "ubicacion_nueva": resultado["ubicacion"],
-        "criticidad": resultado["criticidad"],
-        "score": resultado["score"]
+        "criticidad_anterior": resultado["criticidad_anterior"],
+        "criticidad_nueva": resultado["criticidad"],
+        "score": resultado["score"],
+        "cambio": resultado["cambio"]
     }])
 
     st.subheader("🧾 Log de cambios")
