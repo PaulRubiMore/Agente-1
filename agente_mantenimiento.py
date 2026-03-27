@@ -1,167 +1,127 @@
-# =============================================================================
-# AGENTE ANALISTA DE CONDICIÓN DE ACTIVOS - VERSION FINAL CLOUD
-# =============================================================================
-
-import streamlit as st
 import pandas as pd
 import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import LinearRegression
 
-# =============================================================================
-# 1. DATASET
-# =============================================================================
+# -----------------------------
+# UTILIDADES
+# -----------------------------
+def normalizar(series):
+    return (series - series.min()) / (series.max() - series.min() + 1e-9)
 
-@st.cache_data
-def generar_data():
-    np.random.seed(42)
+# -----------------------------
+# FEATURE ENGINEERING
+# -----------------------------
+def calcular_features(ordenes, fallas, condicion):
+    
+    # Frecuencia de falla
+    freq_falla = fallas.groupby("id_activo").size().rename("frecuencia_falla")
+    
+    # MTTR
+    mttr = ordenes.groupby("id_activo")["duracion"].mean().rename("mttr")
+    
+    # Costos
+    costo = ordenes.groupby("id_activo")["costo"].sum().rename("costo_total")
+    
+    # Tendencia de condición
+    tendencias = []
+    
+    for activo, df in condicion.groupby("id_activo"):
+        df = df.sort_values("fecha")
+        if len(df) > 2:
+            X = np.arange(len(df)).reshape(-1,1)
+            y = df["valor"].values
+            modelo = LinearRegression().fit(X, y)
+            tendencias.append((activo, modelo.coef_[0], np.std(y)))
+    
+    tendencia_df = pd.DataFrame(tendencias, columns=["id_activo", "tendencia", "volatilidad"])
+    tendencia_df = tendencia_df.set_index("id_activo")
+    
+    # Merge
+    features = pd.concat([freq_falla, mttr, costo, tendencia_df], axis=1).fillna(0)
+    
+    return features
 
-    equipos = [f"EQ_{i:03d}" for i in range(20)]
+# -----------------------------
+# CRITICIDAD
+# -----------------------------
+def calcular_criticidad(features):
+    
+    features["criticidad"] = (
+        0.35 * normalizar(features["frecuencia_falla"]) +
+        0.25 * normalizar(features["mttr"]) +
+        0.20 * normalizar(features["costo_total"]) +
+        0.20 * normalizar(features["tendencia"])
+    )
+    
+    return features
 
-    data = []
-    for eq in equipos:
-        for mes in range(1, 13):
-            data.append({
-                "equipo": eq,
-                "mes": mes,
-                "fallas_mes": np.random.poisson(lam=np.random.randint(0, 5)),
-                "tiempo_operacion": np.random.randint(100, 300),
-                "tiempo_reparacion": np.random.randint(1, 10),
-                "costo_mantenimiento": np.random.randint(1000, 10000),
-                "criticidad_actual": np.random.randint(1, 5),
-                "centro": f"C{np.random.randint(1,4)}",
-                "area": f"A{np.random.randint(1,6)}"
-            })
+# -----------------------------
+# ANOMALÍAS
+# -----------------------------
+def detectar_anomalias(condicion):
+    
+    resultados = []
+    
+    for activo, df in condicion.groupby("id_activo"):
+        if len(df) < 10:
+            continue
+        
+        modelo = IsolationForest(contamination=0.05)
+        df["anomaly"] = modelo.fit_predict(df[["valor"]])
+        
+        df["anomaly"] = df["anomaly"].apply(lambda x: 1 if x == -1 else 0)
+        
+        resultados.append(df)
+    
+    return pd.concat(resultados)
 
-    return pd.DataFrame(data)
+# -----------------------------
+# PRONÓSTICO SIMPLE
+# -----------------------------
+def pronostico(condicion, pasos=5):
+    
+    forecasts = []
+    
+    for activo, df in condicion.groupby("id_activo"):
+        df = df.sort_values("fecha")
+        
+        if len(df) < 5:
+            continue
+        
+        X = np.arange(len(df)).reshape(-1,1)
+        y = df["valor"].values
+        
+        modelo = LinearRegression().fit(X, y)
+        
+        futuros = np.arange(len(df), len(df)+pasos).reshape(-1,1)
+        pred = modelo.predict(futuros)
+        
+        forecasts.append({
+            "id_activo": activo,
+            "predicciones": pred.tolist()
+        })
+    
+    return pd.DataFrame(forecasts)
 
-df = generar_data()
-
-# =============================================================================
-# 2. FEATURES
-# =============================================================================
-
-df["mtbf"] = df["tiempo_operacion"] / (df["fallas_mes"] + 1)
-df["mttr"] = df["tiempo_reparacion"]
-
-df["frecuencia_fallas_30d"] = df["fallas_mes"]
-
-df["frecuencia_fallas_90d"] = (
-    df.groupby("equipo")["fallas_mes"]
-    .rolling(3)
-    .mean()
-    .reset_index(0, drop=True)
-)
-
-df["costo_mantenimiento_acum"] = df.groupby("equipo")["costo_mantenimiento"].cumsum()
-
-# =============================================================================
-# 3. TENDENCIA (SIN WARNING)
-# =============================================================================
-
-def calcular_tendencia_array(y):
-    if len(y) < 2:
-        return 0
-    x = np.arange(len(y))
-    return np.polyfit(x, y, 1)[0]
-
-tendencias = (
-    df.groupby("equipo")["fallas_mes"]
-    .apply(lambda g: calcular_tendencia_array(g.values))
-    .reset_index(name="pendiente_fallas")
-)
-
-df = df.merge(tendencias, on="equipo", how="left")
-
-# =============================================================================
-# 4. ANOMALÍAS (Z-SCORE)
-# =============================================================================
-
-def detectar_anomalias_array(x):
-    z = (x - x.mean()) / (x.std() + 1e-6)
-    return (np.abs(z) > 2.5).astype(int)
-
-df["flag_anomalia"] = (
-    df.groupby("equipo")["frecuencia_fallas_30d"]
-    .transform(lambda x: detectar_anomalias_array(x))
-)
-
-# =============================================================================
-# 5. CLASIFICACIÓN
-# =============================================================================
-
-def clasificar(row):
-    if row["flag_anomalia"] == 1 and row["pendiente_fallas"] > 0:
-        return "CRITICO"
-    elif row["pendiente_fallas"] > 0:
-        return "DEGRADANDO"
-    elif row["frecuencia_fallas_30d"] == 0:
-        return "ESTABLE"
-    else:
-        return "NORMAL"
-
-df["estado_activo"] = df.apply(clasificar, axis=1)
-
-# =============================================================================
-# 6. SCORE DE CRITICIDAD
-# =============================================================================
-
-df["criticidad_score"] = (
-    0.3 * (1 / (df["mtbf"] + 1)) +
-    0.2 * df["mttr"] +
-    0.2 * df["frecuencia_fallas_30d"] +
-    0.2 * df["costo_mantenimiento_acum"] +
-    0.1 * df["flag_anomalia"]
-)
-
-# normalización
-df["criticidad_score"] = (
-    (df["criticidad_score"] - df["criticidad_score"].min()) /
-    (df["criticidad_score"].max() - df["criticidad_score"].min() + 1e-6)
-)
-
-# =============================================================================
-# 7. FORECAST (SIN WARNING)
-# =============================================================================
-
-def forecast_array(y, pasos=3):
-    if len(y) < 2:
-        return [0]*pasos
-
-    x = np.arange(len(y))
-    coef = np.polyfit(x, y, 1)
-    future_x = np.arange(len(y), len(y)+pasos)
-
-    return (coef[0]*future_x + coef[1]).tolist()
-
-forecast = (
-    df.groupby("equipo")["fallas_mes"]
-    .apply(lambda g: forecast_array(g.values))
-    .to_dict()
-)
-
-# =============================================================================
-# 8. ALERTAS
-# =============================================================================
-
-df_alertas = df[df["estado_activo"].isin(["CRITICO", "DEGRADANDO"])]
-
-# =============================================================================
-# 9. UI STREAMLIT
-# =============================================================================
-
-st.title("Agente Analista de Condición de Activos")
-
-st.subheader("Clasificación de Activos")
-st.dataframe(
-    df[["equipo", "estado_activo", "criticidad_score", "centro", "area"]]
-    .drop_duplicates()
-    .sort_values("criticidad_score", ascending=False)
-)
-
-st.subheader("Alertas")
-st.dataframe(
-    df_alertas[["equipo", "estado_activo", "criticidad_score", "pendiente_fallas"]]
-)
-
-st.subheader("Forecast de Fallas")
-equipo_sel = st.selectbox("Equipo", df["equipo"].unique())
-st.write(forecast[equipo_sel])
+# -----------------------------
+# AGENTE PRINCIPAL
+# -----------------------------
+class AgenteCondicionActivos:
+    
+    def __init__(self):
+        pass
+    
+    def ejecutar(self, activos, ordenes, fallas, condicion):
+        
+        features = calcular_features(ordenes, fallas, condicion)
+        features = calcular_criticidad(features)
+        
+        anomalías = detectar_anomalias(condicion)
+        pronos = pronostico(condicion)
+        
+        return {
+            "features": features,
+            "anomalias": anomalías,
+            "pronosticos": pronos
+        }
